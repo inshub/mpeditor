@@ -40,7 +40,7 @@ It is designed for ordinary users. You do not need to know code or learn complic
 
 ## Preview
 
-![App Screenshot](https://inshub.oss-cn-beijing.aliyuncs.com/aigc/mpeditor-app-index.png)
+![App Screenshot](./screenshots/app.png)
 
 ## Before You Start
 

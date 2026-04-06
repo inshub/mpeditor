@@ -40,7 +40,7 @@
 
 ## 预览
 
-![应用截图](https://inshub.oss-cn-beijing.aliyuncs.com/aigc/mpeditor-app-index.png)
+![应用截图](./screenshots/app.png)
 
 ## 使用前准备
 
