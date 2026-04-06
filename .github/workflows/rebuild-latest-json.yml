@@ -1,0 +1,81 @@
+name: 'rebuild latest json'
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to rebuild latest.json for, for example v1.0.7'
+        required: true
+        type: string
+      notes:
+        description: 'Optional release notes to write into latest.json'
+        required: false
+        default: 'See the assets to download this version and install.'
+        type: string
+
+jobs:
+  rebuild-latest-json:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TARGET_TAG: ${{ inputs.tag }}
+      RELEASE_NOTES: ${{ inputs.notes }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Download updater assets from release
+        shell: bash
+        run: |
+          mkdir -p updater-artifacts
+          gh release download "${TARGET_TAG}" \
+            --dir updater-artifacts \
+            --pattern '*.app.tar.gz' \
+            --pattern '*.app.tar.gz.sig' \
+            --pattern '*-setup.exe' \
+            --pattern '*-setup.exe.sig' \
+            --pattern '*.msi' \
+            --pattern '*.msi.sig' \
+            --pattern '*.AppImage' \
+            --pattern '*.AppImage.sig'
+
+          ls -lah updater-artifacts
+
+      - name: Generate latest.json
+        env:
+          GITHUB_REF_NAME: ${{ inputs.tag }}
+        run: |
+          node scripts/generate-latest-json.mjs updater-artifacts latest.json
+          cat latest.json
+
+      - name: Validate latest.json platforms
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const latest = JSON.parse(fs.readFileSync("latest.json", "utf8"));
+            const required = [
+              "darwin-aarch64-app",
+              "darwin-x86_64-app",
+              "windows-x86_64-nsis"
+            ];
+            const missing = required.filter((k) => !latest.platforms || !latest.platforms[k]);
+            if (missing.length) {
+              console.error("Missing required updater platforms:", missing.join(", "));
+              process.exit(1);
+            }
+            console.log("latest.json platform validation passed");
+          '
+
+      - name: Upload latest.json to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: latest.json
+          overwrite_files: true

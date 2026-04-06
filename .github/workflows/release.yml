@@ -1,0 +1,325 @@
+name: 'publish'
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Create or load release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace("refs/tags/", "");
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+              core.setOutput("release_id", String(existing.data.id));
+              return;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            const created = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `mpeditor ${tag}`,
+              body: "Release is being prepared. Assets and release notes will be updated after all platform builds finish.",
+              draft: false,
+              prerelease: false,
+            });
+
+            core.setOutput("release_id", String(created.data.id));
+
+  publish-tauri:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            target: 'aarch64-apple-darwin'
+          - platform: 'macos-latest'
+            target: 'x86_64-apple-darwin'
+          - platform: 'windows-latest'
+            target: 'x86_64-pc-windows-msvc'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          ENDPOINT="https://github.com/${REPO}/releases/latest/download/latest.json"
+          PUBKEY="${TAURI_SIGNING_PUBLIC_KEY}"
+
+          # Replace placeholders in tauri.conf.json
+          sed -i.bak "s|__TAURI_UPDATER_ENDPOINT__|${ENDPOINT}|g" src-tauri/tauri.conf.json
+          sed -i.bak "s|__TAURI_UPDATER_PUBKEY__|${PUBKEY}|g" src-tauri/tauri.conf.json
+
+          echo "Updater configured with endpoint: ${ENDPOINT}"
+
+      - name: Build the project
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: false
+          args: --target ${{ matrix.target }}
+
+      - name: Collect updater artifacts
+        shell: bash
+        run: |
+          TARGET_DIR="updater-artifacts/${{ matrix.target }}"
+          mkdir -p "${TARGET_DIR}"
+          find src-tauri/target -type f \
+            \( -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' -o -name '*.msi' -o -name '*.msi.sig' -o -name '*.AppImage' -o -name '*.AppImage.sig' \) \
+            -exec cp {} "${TARGET_DIR}/" \;
+
+          find updater-artifacts -type f -exec ls -lah {} \;
+
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-artifacts-${{ matrix.target }}
+          path: updater-artifacts/*
+          if-no-files-found: error
+
+  publish-updater-json:
+    needs: [create-release, publish-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Download updater artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-artifacts-*
+          path: updater-artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "=== Downloaded artifacts ==="
+          find updater-artifacts -type f -exec ls -lah {} \;
+          echo "=== Signature files ==="
+          find updater-artifacts -name "*.sig" -type f
+
+      - name: Prepare updater notes
+        id: notes
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-creatordate | grep '^v' | grep -vx "${CURRENT_TAG}" | head -n 1 || true)
+
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          mapfile -t COMMITS < <(git log "${RANGE}" --no-merges --pretty=format:'%s' | sed '/^[[:space:]]*$/d' | head -n 6)
+
+          {
+            echo "updater_notes<<EOF"
+            echo "mpeditor ${VERSION} 已发布。"
+            echo
+            if [ "${#COMMITS[@]}" -gt 0 ]; then
+              echo "本次更新："
+              for subject in "${COMMITS[@]}"; do
+                echo "- ${subject}"
+              done
+            else
+              echo "本次更新包含稳定性改进和细节优化。"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate latest.json
+        env:
+          RELEASE_NOTES: ${{ steps.notes.outputs.updater_notes }}
+        run: |
+          node scripts/generate-latest-json.mjs updater-artifacts latest.json
+          cat latest.json
+
+      - name: Validate latest.json platforms
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const latest = JSON.parse(fs.readFileSync("latest.json", "utf8"));
+            const required = [
+              "darwin-aarch64-app",
+              "darwin-x86_64-app",
+              "windows-x86_64-nsis"
+            ];
+            const missing = required.filter((key) => !latest.platforms || !latest.platforms[key]);
+            if (missing.length) {
+              console.error("Missing required updater platforms:", missing.join(", "));
+              console.error("Available platforms:", Object.keys(latest.platforms || {}).join(", ") || "(none)");
+              process.exit(1);
+            }
+            console.log("latest.json platform validation passed");
+          '
+
+      - name: Upload latest.json
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: latest.json
+          overwrite_files: true
+
+      - name: Update GitHub release notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releaseId = Number("${{ needs.create-release.outputs.release_id }}");
+            const tag = context.ref.replace("refs/tags/", "");
+            const version = tag.replace(/^v/, "");
+            const repoPath = `${context.repo.owner}/${context.repo.repo}`;
+
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              per_page: 100,
+            });
+
+            const assetUrl = (asset) =>
+              `https://github.com/${repoPath}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset.name)}`;
+
+            const findAsset = (...patterns) =>
+              assets.find((asset) => patterns.every((pattern) => pattern.test(asset.name)));
+
+            const macArmDmg = findAsset(/\.dmg$/i, /(aarch64|arm64)/i);
+            const macIntelDmg = findAsset(/\.dmg$/i, /(x86_64|x64|amd64)/i);
+            const windowsExe = assets.find(
+              (asset) => /\.exe$/i.test(asset.name) && !/\.sig$/i.test(asset.name),
+            );
+
+            const downloadLines = [];
+            if (macArmDmg || macIntelDmg) {
+              downloadLines.push("### macOS");
+              if (macArmDmg) {
+                downloadLines.push(`- [Apple Silicon（M 系列）](${assetUrl(macArmDmg)})`);
+              }
+              if (macIntelDmg) {
+                downloadLines.push(`- [Intel](${assetUrl(macIntelDmg)})`);
+              }
+              downloadLines.push("");
+            }
+            if (windowsExe) {
+              downloadLines.push("### Windows");
+              downloadLines.push(`- [Windows 安装包](${assetUrl(windowsExe)})`);
+              downloadLines.push("");
+            }
+            if (downloadLines.length === 0) {
+              downloadLines.push("- 构建产物已上传，请在本页 Assets 中选择对应平台的安装包。", "");
+            }
+
+            const rawHighlights = ${{ toJSON(steps.notes.outputs.updater_notes) }} || "";
+            const lines = rawHighlights
+              .split("\n")
+              .map((line) => line.trimEnd())
+              .filter(Boolean);
+
+            const highlightLines = lines
+              .filter((line) => line.startsWith("- "))
+              .map((line) => line.replace(/`/g, "\\`"));
+
+            const summaryLine =
+              lines.find((line) => !line.startsWith("- ") && !line.endsWith("：")) ??
+              `mpeditor ${version} 已发布。`;
+
+            const body = [
+              `## mpeditor v${version}`,
+              "",
+              summaryLine,
+              "",
+              "## 本次更新",
+              "",
+              ...(highlightLines.length > 0 ? highlightLines : ["- 稳定性改进和细节优化。"]),
+              "",
+              "## 下载地址",
+              "",
+              ...downloadLines,
+              "## 安装说明",
+              "",
+              "**macOS**：下载对应架构的 `.dmg`，拖入 `Applications` 后启动。首次打开如遇系统拦截，请前往“系统设置 > 隐私与安全性”中允许打开。",
+              "**Windows**：下载 `.exe` 安装包后双击安装。应用内更新默认采用静默安装模式，安装完成后按提示重启即可。",
+              "",
+              "## 系统要求",
+              "",
+              "- macOS 12+ 或 Windows 10+",
+              "- 首次使用前请在应用内完成公众号账号、图床或 API 服务相关配置（按你的使用场景选择即可）",
+              "- 若使用自动更新，需确保当前版本能够访问 GitHub Release 资源",
+            ].join("\n");
+
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              tag_name: tag,
+              name: `mpeditor v${version}`,
+              body,
+              draft: false,
+              prerelease: false,
+            });

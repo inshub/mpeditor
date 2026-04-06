@@ -1,0 +1,9 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景圆形 -->
+  <circle cx="64" cy="64" r="60" fill="#07C160" />
+  
+  <!-- 代码标签符号 -->
+  <path d="M46 42L26 64L46 86" stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+  <path d="M82 42L102 64L82 86" stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+  <path d="M56 92L72 36" stroke="white" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+</svg> 

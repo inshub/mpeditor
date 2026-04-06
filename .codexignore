@@ -1,0 +1,49 @@
+# Codex ignore file
+# Files and patterns listed here will be excluded from code review
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+target/
+src-tauri/target/
+
+# Generated files
+*.min.js
+*.min.css
+*.bundle.js
+*.bundle.css
+
+# Lock files (usually don't need review)
+package-lock.json
+pnpm-lock.yaml
+Cargo.lock
+
+# Translation files (often large, repetitive changes)
+src/i18n/locales/*.json
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Test coverage reports
+coverage/
+.nyc_output/
+
+# Documentation that doesn't need review
+CHANGELOG.md

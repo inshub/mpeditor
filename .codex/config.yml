@@ -1,0 +1,79 @@
+# Codex Code Review Configuration
+# https://docs.codex.ai/review
+
+review:
+  # Enable automatic code review
+  enabled: true
+
+  # When to trigger reviews
+  triggers:
+    - pull_request
+    - pull_request_review
+
+  # Review scope
+  scope:
+    # Files to include in review
+    include:
+      - "src/**/*.{ts,tsx,js,jsx}"
+      - "src-tauri/**/*.rs"
+      - "*.json"
+      - "*.yml"
+      - "*.yaml"
+
+    # Files to exclude from review
+    exclude:
+      - "node_modules/**"
+      - "dist/**"
+      - "build/**"
+      - "*.min.js"
+      - "src/i18n/locales/*.json"
+
+  # Review rules
+  rules:
+    # Code style and formatting
+    - id: style
+      enabled: true
+      severity: suggestion
+
+    # Security vulnerabilities
+    - id: security
+      enabled: true
+      severity: warning
+
+    # Performance optimizations
+    - id: performance
+      enabled: true
+      severity: suggestion
+
+    # TypeScript/React best practices
+    - id: typescript-react
+      enabled: true
+      severity: suggestion
+      config:
+        check-hooks: true
+        check-types: true
+        enforce-strict-mode: true
+
+    # Rust best practices
+    - id: rust
+      enabled: true
+      severity: suggestion
+      config:
+        check-clippy: true
+        check-cargo-toml: true
+
+  # Custom instructions for the reviewer
+  instructions: |
+    This is a Tauri v2 + React 19 + TypeScript desktop application.
+    Key coding standards:
+    - All comments and logs MUST be in English only
+    - Use strict TypeScript mode
+    - Follow React 19 best practices (function components, hooks)
+    - Use shadcn/ui components
+    - Use @/ path alias for imports
+    - Rust code should follow standard naming conventions
+    - Keep code clean and minimal (KISS principle)
+
+  # Auto-fix settings
+  auto_fix:
+    enabled: false  # Require manual approval for fixes
