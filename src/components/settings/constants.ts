@@ -34,7 +34,7 @@ export const GIT_CONTENT_EXTENSIONS = new Set([
   "gif",
   "svg",
 ]);
-export const changelogUrl = "https://github.com/yourusername/mpeditor/releases";
-export const officialSiteUrl = "https://github.com/yourusername/mpeditor";
-export const termsUrl = "https://github.com/yourusername/mpeditor/blob/main/Terms.md";
-export const privacyUrl = "https://github.com/yourusername/mpeditor/blob/main/Privacy.md";
+export const changelogUrl = "https://github.com/inshub/mpeditor/releases";
+export const officialSiteUrl = "https://github.com/inshub/mpeditor";
+export const termsUrl = "https://github.com/inshub/mpeditor/blob/main/Terms.md";
+export const privacyUrl = "https://github.com/inshub/mpeditor/blob/main/Privacy.md";

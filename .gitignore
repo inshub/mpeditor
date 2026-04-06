@@ -27,3 +27,5 @@ dist-ssr
 .claude/
 
 src-tauri/Cargo.lock
+.tauri-keys
+.tauri-keys.pub
