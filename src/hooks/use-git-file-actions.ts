@@ -331,6 +331,17 @@ export function useGitFileActions({
   ) => {
     const gitSourceKey = `${repository.localPath}::${filePath}`;
     const existingDocument = workspaceDocuments.find((doc) => doc.gitSourceKey === gitSourceKey);
+
+    // If the document is already open in memory, reuse it to preserve unsaved content
+    if (existingDocument) {
+      setWorkspace((prev) => ({
+        ...prev,
+        activeDocumentId: existingDocument.id,
+      }));
+      const isImage = isGitImagePath(fileName);
+      setActivePanel(isImage ? "preview" : "editor");
+      return;
+    }
     const isImage = isGitImagePath(fileName);
 
     try {
@@ -362,23 +373,15 @@ export function useGitFileActions({
         gitFilePath: filePath,
       };
 
-      setWorkspace((prev) => {
-        const filteredDocs = existingDocument
-          ? prev.documents.filter((doc) => doc.id !== existingDocument.id)
-          : prev.documents;
-        return {
-          ...prev,
-          documents: [...filteredDocs, newDoc],
-          activeDocumentId: newDoc.id,
-        };
-      });
+      setWorkspace((prev) => ({
+        ...prev,
+        documents: [...prev.documents, newDoc],
+        activeDocumentId: newDoc.id,
+      }));
 
       setActivePanel(isImage ? "preview" : "editor");
 
-      const message = existingDocument
-        ? t("workspace.feedback.switchedToFile", { fileName })
-        : t("workspace.feedback.loadedFile", { fileName });
-      toast.success(message);
+      toast.success(t("workspace.feedback.loadedFile", { fileName }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       toast.error(t("workspace.feedback.loadFileFailed", { message }));

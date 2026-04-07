@@ -610,15 +610,22 @@ async fn fetch_wechat_access_token_remote(
     app_secret: &str,
     network_proxy: Option<&NetworkProxyConfig>,
 ) -> Result<(String, u64), String> {
-    let url = format!(
-        "https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={app_id}&secret={app_secret}"
-    );
-    let json = send_wechat_json_request(proxy_domain, &url, "GET", None, network_proxy).await?;
+    // Use stable_token to avoid invalidating previous tokens
+    // See: https://developers.weixin.qq.com/doc/offiaccount/Basic_Information/getStableAccessToken.html
+    let url = "https://api.weixin.qq.com/cgi-bin/stable_token";
+    let payload = serde_json::json!({
+        "grant_type": "client_credential",
+        "appid": app_id,
+        "secret": app_secret,
+        "forcerefresh": false
+    });
+    let json = send_wechat_json_request(proxy_domain, &url, "POST", Some(payload), network_proxy)
+        .await?;
     let token_body: WechatTokenResponse = serde_json::from_value(json)
-        .map_err(|err| format!("Failed to parse wechat access_token response: {err}"))?;
+        .map_err(|err| format!("Failed to parse wechat stable_token response: {err}"))?;
     let token = token_body.access_token.ok_or_else(|| {
         format!(
-            "Failed to get wechat access_token: {} {}",
+            "Failed to get wechat stable_token: {} {}",
             token_body.errcode.unwrap_or_default(),
             token_body.errmsg.unwrap_or_else(|| "unknown".to_string())
         )
