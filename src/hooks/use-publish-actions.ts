@@ -211,7 +211,12 @@ export function usePublishActions({
       return fallback();
     }
 
+    const traceId = `upload-clipboard-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const startedAt = Date.now();
     try {
+      console.info(
+        `[publish-upload] start trace=${traceId} file=${file.name || "clipboard"} size=${file.size} type=${file.type || "unknown"} provider=${imageHostProvider}`
+      );
       const basePayload = buildImageHostUploadPayload();
       const payload: UploadImageRequestPayload = {
         fileName: file.name || `clipboard-${Date.now()}.png`,
@@ -226,9 +231,15 @@ export function usePublishActions({
       if (!response?.url) {
         throw new Error(t("workspace.feedback.uploadEmptyUrl"));
       }
+      console.info(
+        `[publish-upload] success trace=${traceId} duration_ms=${Date.now() - startedAt} provider=${response.provider} has_url=${Boolean(response.url)}`
+      );
       return response.url;
     } catch (err) {
-      console.error("Clipboard image upload failed:", err);
+      console.error(
+        `[publish-upload] failed trace=${traceId} duration_ms=${Date.now() - startedAt}`,
+        err
+      );
       toast.error(
         t("workspace.feedback.uploadFallbackLocal", {
           message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),
@@ -241,23 +252,45 @@ export function usePublishActions({
   const uploadContentImagesForDraft = async (html: string): Promise<string> => {
     if (!isTauriRuntime()) return html;
 
+    const traceId = `upload-content-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const startedAt = Date.now();
     const doc = new DOMParser().parseFromString(html, "text/html");
     const images = Array.from(doc.querySelectorAll("img"));
-    if (!images.length) return html;
+    if (!images.length) {
+      console.info(`[publish-upload-content] no_images trace=${traceId}`);
+      return html;
+    }
 
     const basePayload = buildImageHostUploadPayload();
+    console.info(
+      `[publish-upload-content] start trace=${traceId} image_count=${images.length} provider=${imageHostProvider}`
+    );
 
-    for (const image of images) {
+    let uploadedCount = 0;
+    let skippedCount = 0;
+
+    for (const [index, image] of images.entries()) {
       const src = image.getAttribute("src")?.trim();
-      if (!src) continue;
-      if (src.startsWith("https://mmbiz.qpic.cn/") || src.startsWith("http://mmbiz.qpic.cn/"))
+      if (!src) {
+        skippedCount += 1;
+        console.info(`[publish-upload-content] skip_empty_src trace=${traceId} index=${index}`);
         continue;
+      }
+      if (src.startsWith("https://mmbiz.qpic.cn/") || src.startsWith("http://mmbiz.qpic.cn/")) {
+        skippedCount += 1;
+        console.info(`[publish-upload-content] skip_wechat_cdn trace=${traceId} index=${index}`);
+        continue;
+      }
 
       const payload: UploadImageSourceRequestPayload = {
         src,
         ...basePayload,
       };
 
+      const itemStartedAt = Date.now();
+      console.info(
+        `[publish-upload-content] upload_start trace=${traceId} index=${index} src_prefix=${src.slice(0, 120)}`
+      );
       const response = await invoke<UploadImageResponsePayload>("upload_image_source_to_host", {
         request: payload,
       });
@@ -265,8 +298,15 @@ export function usePublishActions({
         throw new Error(t("workspace.feedback.contentUploadEmptyUrl"));
       }
       image.setAttribute("src", response.url);
+      uploadedCount += 1;
+      console.info(
+        `[publish-upload-content] upload_done trace=${traceId} index=${index} duration_ms=${Date.now() - itemStartedAt} provider=${response.provider}`
+      );
     }
 
+    console.info(
+      `[publish-upload-content] done trace=${traceId} duration_ms=${Date.now() - startedAt} uploaded=${uploadedCount} skipped=${skippedCount}`
+    );
     return doc.body.innerHTML;
   };
 
@@ -278,34 +318,74 @@ export function usePublishActions({
     }
 
     setIsPublishingDraft(true);
+    const startedAt = Date.now();
+    const traceId = `publish-${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     try {
-      const mediaId = await withTimeout(
-        (async () => {
-          const compatibleHtml = await makeWeChatCompatible(renderedHtml, previewThemeId, {
-            convertImagesToBase64: false,
-          });
-          const finalHtml = await uploadContentImagesForDraft(compatibleHtml);
-          return invoke<string>("publish_wechat_draft", {
-            appId: account.appId,
-            appSecret: account.appSecret,
-            proxyDomain: buildWechatProxyDomain() || undefined,
-            title: activeDocumentTitle || t("workspace.sidebar.untitled"),
-            contentHtml: finalHtml,
-            author: account.name || "",
-            networkProxy,
-          });
-        })(),
-        30_000,
-        "发布超时（30 秒），请检查代理可达性、图片大小或稍后重试"
+      const title = activeDocumentTitle || t("workspace.sidebar.untitled");
+      console.info(
+        `[publish] start trace=${traceId} title_len=${title.length} html_len=${renderedHtml.length} theme=${previewThemeId} proxy_enabled=${networkProxy.enabled}`
       );
+      const compatStart = Date.now();
+      console.info(`[publish] stage=wechat_compat trace=${traceId}`);
+      const compatibleHtml = await makeWeChatCompatible(renderedHtml, previewThemeId, {
+        convertImagesToBase64: false,
+      });
+      const compatElapsed = Date.now() - compatStart;
+      console.info(
+        `[publish] stage=wechat_compat_done trace=${traceId} duration_ms=${compatElapsed} output_len=${compatibleHtml.length}`
+      );
+      if (compatElapsed > 400) {
+        console.warn(
+          `[publish] slow_compat duration_ms=${compatElapsed} input_len=${renderedHtml.length} output_len=${compatibleHtml.length}`
+        );
+      }
+      const uploadStart = Date.now();
+      console.info(`[publish] stage=upload_content_images trace=${traceId}`);
+      const finalHtml = await uploadContentImagesForDraft(compatibleHtml);
+      const uploadElapsed = Date.now() - uploadStart;
+      console.info(
+        `[publish] stage=upload_content_images_done trace=${traceId} duration_ms=${uploadElapsed} output_len=${finalHtml.length}`
+      );
+      if (uploadElapsed > 1000) {
+        console.warn(`[publish] slow_image_upload duration_ms=${uploadElapsed} html_len=${finalHtml.length}`);
+      }
+
+      const publishInvokeTimeoutMs = 45_000;
+      console.info(
+        `[publish] stage=invoke_publish_wechat_draft trace=${traceId} timeout_ms=${publishInvokeTimeoutMs}`
+      );
+      const mediaId = await withTimeout(
+        invoke<string>("publish_wechat_draft", {
+          appId: account.appId,
+          appSecret: account.appSecret,
+          proxyDomain: buildWechatProxyDomain() || undefined,
+          title,
+          contentHtml: finalHtml,
+          author: account.name || "",
+          networkProxy,
+        }),
+        publishInvokeTimeoutMs,
+        `发布草稿超时（${Math.round(publishInvokeTimeoutMs / 1000)} 秒），请检查代理可达性或稍后重试`
+      );
+      console.info(`[publish] stage=invoke_publish_wechat_draft_done trace=${traceId}`);
       toast.success(t("workspace.actions.publishSuccessTitle"), {
         description: t("workspace.actions.publishSuccessDescription", {
           title: activeDocumentTitle || t("workspace.sidebar.untitled"),
           mediaId,
         }),
       });
+      const totalElapsed = Date.now() - startedAt;
+      console.info(
+        `[publish] success trace=${traceId} duration_ms=${totalElapsed} media_id=${mediaId}`
+      );
+      if (totalElapsed > 1000) {
+        console.warn(`[publish] slow_publish duration_ms=${totalElapsed}`);
+      }
     } catch (err) {
-      console.error("Publish draft failed:", err);
+      console.error(
+        `[publish] failed trace=${traceId} duration_ms=${Date.now() - startedAt}`,
+        err
+      );
       toast.error(
         t("workspace.feedback.publishDraftFailed", {
           message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),

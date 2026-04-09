@@ -204,6 +204,7 @@ export default function SettingsDialog({
     checkUpdate,
   } = useUpdater(updaterProxyUrl ? { proxy: updaterProxyUrl } : undefined);
   const [labTestingConnection, setLabTestingConnection] = useState(false);
+  const [networkTestingConnection, setNetworkTestingConnection] = useState(false);
   const [labStatusText, setLabStatusText] = useState<string | null>(null);
   const updateToastIdRef = useRef<string | number | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -226,6 +227,37 @@ export default function SettingsDialog({
   const activeUploadAccount = settingsDraft.wechatAccounts.find(
     (acc) => acc.id === settingsDraft.defaultWechatAccountId
   );
+  const normalizeWechatProxyDomain = (value: string) => {
+    const candidate = (value || "").trim() || defaultWechatProxyUrl.trim();
+    return candidate.replace(/\/+$/, "");
+  };
+
+  const testNetworkProxyConnection = async () => {
+    if (networkTestingConnection) return;
+    setNetworkTestingConnection(true);
+    const draftNetworkProxy = {
+      enabled: settingsDraft.proxyEnabled,
+      socksProxy: settingsDraft.socksProxy.trim(),
+      httpProxy: settingsDraft.httpProxy.trim(),
+      httpsProxy: settingsDraft.httpsProxy.trim(),
+    };
+    const draftWechatProxyDomain = normalizeWechatProxyDomain(settingsDraft.wechatProxyUrl);
+    try {
+      await invoke<string>("test_network_proxy_connection", {
+        proxyDomain: draftWechatProxyDomain || undefined,
+        networkProxy: draftNetworkProxy,
+      });
+      toast.success(t("workspace.feedback.networkProxyConnectSuccess"));
+    } catch (err) {
+      toast.error(
+        t("workspace.feedback.networkProxyConnectFailed", {
+          message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),
+        })
+      );
+    } finally {
+      setNetworkTestingConnection(false);
+    }
+  };
 
   useEffect(() => {
     if (!checkError || downloading || !updateToastIdRef.current) return;
@@ -1140,6 +1172,15 @@ export default function SettingsDialog({
                         className="app-segmented-option"
                       >
                         {t("workspace.settings.network.clear")}
+                      </button>
+                      <button
+                        onClick={() => void testNetworkProxyConnection()}
+                        disabled={networkTestingConnection}
+                        className="rounded-lg bg-[var(--app-accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-70"
+                      >
+                        {networkTestingConnection
+                          ? t("workspace.settings.network.testing")
+                          : t("workspace.settings.network.testConnection")}
                       </button>
                     </div>
                     <div

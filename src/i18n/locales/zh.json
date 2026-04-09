@@ -431,6 +431,8 @@
       "network": {
         "title": "网络与代理",
         "proxyTitle": "应用代理",
+        "testing": "测试中...",
+        "testConnection": "测试连接",
         "socksLabel": "SOCKS5",
         "httpLabel": "HTTP",
         "httpsLabel": "HTTPS",
@@ -592,6 +594,8 @@
       "wechatConnectTimeout": "{{accountName}} 连接失败：请求超时，请检查 API 代理地址或网络连接",
       "wechatConnectSuccess": "{{accountName}} 连接成功",
       "wechatConnectFailed": "{{accountName}} 连接失败：{{message}}",
+      "networkProxyConnectSuccess": "网络与代理连接正常",
+      "networkProxyConnectFailed": "网络与代理连接失败：{{message}}",
       "copyFailed": "复制失败，请检查系统剪贴板权限后重试",
       "defaultWechatAccountRequired": "请先在「配置公众号」中添加账号并设为默认",
       "publishDraftFailed": "发布到草稿箱失败：{{message}}",

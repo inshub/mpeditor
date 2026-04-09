@@ -1,4 +1,5 @@
 import { THEMES } from "./themes";
+const WECHAT_COMPAT_FAST_PATH_HTML_LEN = 20_000;
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -120,6 +121,13 @@ function convertListNodeToParagraphs(
 }
 
 function buildWeChatCompatibleHtml(html: string, themeId: string) {
+  const buildStart = typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (html.length > WECHAT_COMPAT_FAST_PATH_HTML_LEN) {
+    console.warn(
+      `[wechat-compat] fast_path_skip reason=large_html html_len=${html.length} threshold=${WECHAT_COMPAT_FAST_PATH_HTML_LEN}`
+    );
+    return html;
+  }
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, "text/html");
 
@@ -143,6 +151,7 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
       section.appendChild(node);
     }
   });
+  const stageWrapDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   // 2. WeChat ignores flex in many scenarios. Convert image flex wrappers to table layout.
   const flexLikeNodes = section.querySelectorAll("div, p.image-grid");
@@ -193,6 +202,7 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
       node.setAttribute("style", style.replace(/display:\s*flex;?/g, "display: block;"));
     }
   });
+  const stageFlexDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   // 3. Convert lists into bullet/number paragraphs for deterministic WeChat paste behavior.
   const topLevelLists = Array.from(section.querySelectorAll("ul, ol")).filter(
@@ -205,6 +215,7 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
     paragraphs.forEach((paragraph) => fragment.appendChild(paragraph));
     list.parentNode?.replaceChild(fragment, list);
   });
+  const stageListDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   // 4. Force Inheritance
   // WeChat's editor aggressively overrides inherited fonts on <p>, <li>, etc.
@@ -215,11 +226,9 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
   const lineHeightMatch = containerStyle.match(/line-height:\s*([^;]+);/);
 
   // We only enforce on specific text tags that WeChat likes to hijack
-  const textNodes = section.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, blockquote, span");
+  // Avoid scanning all <span> nodes to prevent UI stalls on large highlighted code blocks.
+  const textNodes = section.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, blockquote");
   textNodes.forEach((node) => {
-    // Preserve code highlighting tokens inside code blocks.
-    if (node.tagName === "SPAN" && node.closest("pre, code")) return;
-
     let currentStyle = node.getAttribute("style") || "";
 
     if (fontMatch && !currentStyle.includes("font-family:")) {
@@ -232,7 +241,7 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
     if (
       sizeMatch &&
       !currentStyle.includes("font-size:") &&
-      ["P", "LI", "BLOCKQUOTE", "SPAN"].includes(node.tagName)
+      ["P", "LI", "BLOCKQUOTE"].includes(node.tagName)
     ) {
       currentStyle += ` font-size: ${sizeMatch[1]};`;
     }
@@ -242,10 +251,11 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
 
     node.setAttribute("style", currentStyle.trim());
   });
+  const stageTextDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   // Keep CJK punctuation attached to preceding inline emphasis in WeChat.
   // Example: <strong>标题</strong>：说明 -> <strong>标题：</strong>说明
-  const inlineNodes = section.querySelectorAll("strong, b, em, span, a, code");
+  const inlineNodes = section.querySelectorAll("strong, b, em, a, code");
   inlineNodes.forEach((node) => {
     const next = node.nextSibling;
     if (!next || next.nodeType !== Node.TEXT_NODE) return;
@@ -262,6 +272,7 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
       next.parentNode?.removeChild(next);
     }
   });
+  const stageInlineDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   // 5. WeChat draft editor does not preserve horizontal scrolling in code blocks.
   // Convert them to wrapped blocks so long commands are not clipped after paste.
@@ -280,6 +291,7 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
       `${currentStyle}; white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: anywhere !important; overflow-x: visible !important; max-width: 100% !important;`
     );
   });
+  const stageCodeDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   doc.body.innerHTML = "";
   doc.body.appendChild(section);
@@ -291,6 +303,17 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
     /(<\/(?:strong|b|em|span|a|code)>)\s*([：；，。！？、])/g,
     "$1\u2060$2"
   );
+  const stageOutputDone = typeof performance !== "undefined" ? performance.now() : Date.now();
+
+  const buildDuration = (typeof performance !== "undefined" ? performance.now() : Date.now()) - buildStart;
+  if (buildDuration > 400) {
+    console.warn(
+      `[wechat-compat] slow_build duration_ms=${Math.round(buildDuration)} html_len=${html.length} output_len=${outputHtml.length}`
+    );
+    console.warn(
+      `[wechat-compat] slow_build_breakdown wrap_ms=${Math.round(stageWrapDone - buildStart)} flex_ms=${Math.round(stageFlexDone - stageWrapDone)} list_ms=${Math.round(stageListDone - stageFlexDone)} text_ms=${Math.round(stageTextDone - stageListDone)} inline_ms=${Math.round(stageInlineDone - stageTextDone)} code_ms=${Math.round(stageCodeDone - stageInlineDone)} output_ms=${Math.round(stageOutputDone - stageCodeDone)}`
+    );
+  }
 
   return outputHtml;
 }

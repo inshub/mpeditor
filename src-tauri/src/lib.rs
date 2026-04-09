@@ -29,6 +29,7 @@ const GIT_REPOSITORIES_DIR: &str = "git-repositories";
 const WECHAT_UPLOADIMG_TARGET_BYTES: usize = 900 * 1024;
 const WECHAT_UPLOADIMG_MAX_BYTES: usize = 1024 * 1024;
 const WECHAT_TOKEN_REFRESH_BUFFER_SECS: u64 = 200;
+const WECHAT_PROXY_UPLOAD_COOLDOWN_SECS: u64 = 180;
 
 #[derive(Clone)]
 struct CachedWechatToken {
@@ -37,6 +38,7 @@ struct CachedWechatToken {
 }
 
 static WECHAT_TOKEN_CACHE: OnceLock<Mutex<HashMap<String, CachedWechatToken>>> = OnceLock::new();
+static WECHAT_PROXY_UPLOAD_COOLDOWN_UNTIL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -573,6 +575,43 @@ fn wechat_token_cache() -> &'static Mutex<HashMap<String, CachedWechatToken>> {
     WECHAT_TOKEN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn wechat_proxy_upload_cooldown() -> &'static Mutex<Option<Instant>> {
+    WECHAT_PROXY_UPLOAD_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(None))
+}
+
+fn is_wechat_proxy_upload_cooling_down() -> bool {
+    let Ok(mut guard) = wechat_proxy_upload_cooldown().lock() else {
+        return false;
+    };
+    if let Some(until) = *guard {
+        if until > Instant::now() {
+            return true;
+        }
+        *guard = None;
+    }
+    false
+}
+
+fn start_wechat_proxy_upload_cooldown(reason: &str) {
+    if let Ok(mut guard) = wechat_proxy_upload_cooldown().lock() {
+        let until = Instant::now() + Duration::from_secs(WECHAT_PROXY_UPLOAD_COOLDOWN_SECS);
+        *guard = Some(until);
+        eprintln!(
+            "[wechat-proxy-upload] cooldown_start seconds={} reason={}",
+            WECHAT_PROXY_UPLOAD_COOLDOWN_SECS, reason
+        );
+    }
+}
+
+fn clear_wechat_proxy_upload_cooldown() {
+    if let Ok(mut guard) = wechat_proxy_upload_cooldown().lock() {
+        if guard.is_some() {
+            eprintln!("[wechat-proxy-upload] cooldown_cleared");
+        }
+        *guard = None;
+    }
+}
+
 fn get_cached_wechat_token(cache_key: &str) -> Option<String> {
     let guard = wechat_token_cache().lock().ok()?;
     let cached = guard.get(cache_key)?;
@@ -643,56 +682,15 @@ async fn upload_to_wechat_image(
     network_proxy: Option<&NetworkProxyConfig>,
 ) -> Result<serde_json::Value, String> {
     let proxy_enabled = network_proxy.map(|p| p.enabled).unwrap_or(false);
+    let proxy_configured = normalize_proxy_endpoint(proxy_domain, proxy_enabled).is_some();
     eprintln!(
-        "[wechat-upload] via_proxy={} file={} mime={} bytes={} url={}",
-        normalize_proxy_endpoint(proxy_domain, proxy_enabled).is_some(),
+        "[wechat-upload] via_proxy=false proxy_configured={} file={} mime={} bytes={} url={}",
+        proxy_configured,
         file_name,
         mime_type,
         bytes.len(),
         upload_url
     );
-    if let Some(proxy) = normalize_proxy_endpoint(proxy_domain, proxy_enabled) {
-        let direct_fallback_bytes = bytes.clone();
-        match send_proxy_upload_request(
-            &proxy,
-            upload_url,
-            file_name,
-            mime_type,
-            bytes,
-            "media",
-            network_proxy,
-        )
-        .await
-        {
-            Ok(json) => return Ok(json),
-            Err(proxy_err) => {
-                let proxy_enabled = network_proxy.map(|cfg| cfg.enabled).unwrap_or(false);
-                if proxy_enabled {
-                    eprintln!(
-                        "[wechat-upload] proxy_failed_then_fallback_direct proxy={} file={} mime={} error={}",
-                        proxy, file_name, mime_type, proxy_err
-                    );
-                    return upload_to_wechat_image_direct(
-                        upload_url,
-                        file_name,
-                        mime_type,
-                        direct_fallback_bytes,
-                        network_proxy,
-                    )
-                    .await
-                    .map_err(|direct_err| {
-                        format!(
-                            "Proxy upload failed: {proxy_err}; direct upload fallback failed: {direct_err}"
-                        )
-                    });
-                }
-                return Err(format!(
-                    "Proxy upload failed: {proxy_err}. To enable direct fallback, turn on app network proxy."
-                ));
-            }
-        }
-    }
-
     upload_to_wechat_image_direct(upload_url, file_name, mime_type, bytes, network_proxy).await
 }
 
@@ -756,9 +754,25 @@ pub(crate) async fn send_wechat_json_request(
         let payload = serde_json::json!({
             "url": target_url,
             "method": method,
-            "data": data
+            "data": data.clone()
         });
-        return send_proxy_request(&proxy, payload, network_proxy).await;
+        match send_proxy_request(&proxy, payload, network_proxy).await {
+            Ok(json) => return Ok(json),
+            Err(proxy_err) => {
+                if is_retryable_proxy_error(&proxy_err) {
+                    start_wechat_proxy_upload_cooldown("proxy_json_timeout_or_connect_error");
+                }
+                if proxy_enabled {
+                    eprintln!(
+                        "[wechat-http] proxy_failed_then_fallback_direct method={} proxy={} url={} error={}",
+                        method, proxy, target_url, proxy_err
+                    );
+                    // continue with direct request below
+                } else {
+                    return Err(proxy_err);
+                }
+            }
+        }
     }
 
     let client = build_http_client(network_proxy)?;
@@ -786,6 +800,42 @@ pub(crate) async fn send_wechat_json_request(
         .map_err(|err| format!("Failed to read wechat API response: {err}"))?;
     serde_json::from_str(&body)
         .map_err(|err| format!("Invalid wechat API response: {err}; body={body}"))
+}
+
+pub(crate) async fn probe_network_connectivity(
+    network_proxy: Option<&NetworkProxyConfig>,
+) -> Result<(), String> {
+    let client = build_http_client(network_proxy)?;
+    let response = client
+        .get("https://api.weixin.qq.com/cgi-bin/getcallbackip")
+        .send()
+        .await
+        .map_err(|err| format!("Network probe failed: {err}"))?;
+    eprintln!(
+        "[network-probe] direct status={} proxy_enabled={}",
+        response.status(),
+        network_proxy.map(|cfg| cfg.enabled).unwrap_or(false)
+    );
+    Ok(())
+}
+
+pub(crate) async fn probe_wechat_proxy_connectivity(
+    proxy_domain: Option<&str>,
+    network_proxy: Option<&NetworkProxyConfig>,
+) -> Result<(), String> {
+    let proxy_enabled = network_proxy.map(|cfg| cfg.enabled).unwrap_or(false);
+    let Some(proxy) = normalize_proxy_endpoint(proxy_domain, proxy_enabled) else {
+        return Err("Wechat proxy URL is empty or app proxy is disabled".to_string());
+    };
+
+    let payload = serde_json::json!({
+        "url": "https://api.weixin.qq.com/cgi-bin/getcallbackip",
+        "method": "GET",
+        "data": null
+    });
+    let _ = send_proxy_request(&proxy, payload, network_proxy).await?;
+    eprintln!("[network-probe] wechat_proxy status=ok proxy={}", proxy);
+    Ok(())
 }
 
 async fn send_proxy_request(
@@ -930,7 +980,7 @@ async fn send_proxy_upload_request(
                         max_attempts,
                         err
                     );
-                    let can_retry = attempt < max_attempts && is_retryable_proxy_upload_error(&err);
+                    let can_retry = attempt < max_attempts && is_retryable_proxy_error(&err);
                     if can_retry {
                         tokio::time::sleep(Duration::from_millis(1200)).await;
                         continue;
@@ -955,7 +1005,7 @@ async fn send_proxy_upload_request(
                 return Ok(parsed);
             }
             Err(err) => {
-                let can_retry = attempt < max_attempts && is_retryable_proxy_upload_error(&err);
+                let can_retry = attempt < max_attempts && is_retryable_proxy_error(&err);
                 if can_retry {
                     tokio::time::sleep(Duration::from_millis(1200)).await;
                     continue;
@@ -967,7 +1017,7 @@ async fn send_proxy_upload_request(
     Err("Proxy upload failed with unknown error".to_string())
 }
 
-fn is_retryable_proxy_upload_error(message: &str) -> bool {
+fn is_retryable_proxy_error(message: &str) -> bool {
     message.contains("kind=timeout")
         || message.contains("timed out")
         || message.contains("kind=connect")
@@ -1823,6 +1873,7 @@ pub fn run() {
             pick_local_library_directory,
             image_to_data_url_fallback,
             commands::wechat::test_wechat_account,
+            commands::wechat::test_network_proxy_connection,
             commands::wechat::publish_wechat_draft,
             commands::wechat::upload_image_to_host,
             commands::wechat::upload_image_source_to_host,

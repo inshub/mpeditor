@@ -51,21 +51,42 @@ export function useCopyActions({
   const handleCopy = async () => {
     if (!previewRef.current) return;
     setIsCopying(true);
+    const startedAt = Date.now();
+    const traceId = `copy-${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const plainText = previewRef.current.innerText;
       let copiedOk = false;
+      const tauriRuntime = isTauriRuntime();
+      console.info(
+        `[copy] start trace=${traceId} tauri=${tauriRuntime} html_len=${renderedHtml.length} plain_text_len=${plainText.length} theme=${previewThemeId}`
+      );
 
-      if (isTauriRuntime()) {
+      if (tauriRuntime) {
+        console.info(`[copy] stage=wechat_compat_sync trace=${traceId}`);
         const finalHtmlForCopy = makeWeChatCompatibleSync(renderedHtml, previewThemeId);
+        console.info(
+          `[copy] stage=wechat_compat_sync_done trace=${traceId} output_len=${finalHtmlForCopy.length}`
+        );
+
+        console.info(`[copy] stage=exec_command_copy trace=${traceId}`);
         copiedOk = copyViaExecCommand(finalHtmlForCopy, plainText);
+        console.info(`[copy] stage=exec_command_copy_done trace=${traceId} ok=${copiedOk}`);
         if (!copiedOk && navigator.clipboard?.writeText) {
+          console.info(`[copy] stage=clipboard_write_text trace=${traceId}`);
           await navigator.clipboard.writeText(plainText);
           copiedOk = true;
+          console.info(`[copy] stage=clipboard_write_text_done trace=${traceId}`);
         }
       } else {
+        console.info(`[copy] stage=wechat_compat_async trace=${traceId}`);
         const finalHtmlForCopy = await makeWeChatCompatible(renderedHtml, previewThemeId);
+        console.info(
+          `[copy] stage=wechat_compat_async_done trace=${traceId} output_len=${finalHtmlForCopy.length}`
+        );
         if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
           try {
+            console.info(`[copy] stage=clipboard_write_rich trace=${traceId}`);
             const blob = new Blob([finalHtmlForCopy], { type: "text/html" });
             const textBlob = new Blob([plainText], { type: "text/plain" });
             const clipboardItem = new ClipboardItem({
@@ -74,23 +95,30 @@ export function useCopyActions({
             });
             await navigator.clipboard.write([clipboardItem]);
             copiedOk = true;
+            console.info(`[copy] stage=clipboard_write_rich_done trace=${traceId}`);
           } catch {
             copiedOk = false;
+            console.warn(`[copy] stage=clipboard_write_rich_failed trace=${traceId}`);
           }
         }
 
         if (!copiedOk) {
+          console.info(`[copy] stage=exec_command_copy trace=${traceId}`);
           copiedOk = copyViaExecCommand(finalHtmlForCopy, plainText);
+          console.info(`[copy] stage=exec_command_copy_done trace=${traceId} ok=${copiedOk}`);
         }
 
         if (!copiedOk && navigator.clipboard?.writeText) {
+          console.info(`[copy] stage=clipboard_write_text trace=${traceId}`);
           await navigator.clipboard.writeText(plainText);
           copiedOk = true;
+          console.info(`[copy] stage=clipboard_write_text_done trace=${traceId}`);
         }
       }
 
       if (!copiedOk) {
         try {
+          console.info(`[copy] stage=exec_command_fallback trace=${traceId}`);
           document.execCommand("copy");
         } catch {
           // no-op, keep failure path below
@@ -103,8 +131,14 @@ export function useCopyActions({
 
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+      const elapsed = Date.now() - startedAt;
+      console.info(`[copy] success trace=${traceId} duration_ms=${elapsed}`);
+      if (elapsed > 400) {
+        console.warn(`[copy] slow_copy duration_ms=${elapsed} plain_text_len=${plainText.length}`);
+      }
     } catch (copyErr) {
-      console.error("Copy failed", copyErr);
+      const elapsed = Date.now() - startedAt;
+      console.error(`[copy] failed trace=${traceId} duration_ms=${elapsed}`, copyErr);
       toast.error(t("workspace.feedback.copyFailed"));
     } finally {
       setIsCopying(false);

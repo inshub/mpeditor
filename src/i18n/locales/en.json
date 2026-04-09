@@ -431,6 +431,8 @@
       "network": {
         "title": "Network",
         "proxyTitle": "App proxy",
+        "testing": "Testing...",
+        "testConnection": "Test connection",
         "socksLabel": "SOCKS5",
         "httpLabel": "HTTP",
         "httpsLabel": "HTTPS",
@@ -592,6 +594,8 @@
       "wechatConnectTimeout": "{{accountName}} connection failed: request timed out. Check API proxy URL or network connectivity.",
       "wechatConnectSuccess": "{{accountName}} connected successfully",
       "wechatConnectFailed": "{{accountName}} connection failed: {{message}}",
+      "networkProxyConnectSuccess": "Network and proxy connection is healthy",
+      "networkProxyConnectFailed": "Network and proxy connection failed: {{message}}",
       "copyFailed": "Copy failed. Check clipboard permissions and try again.",
       "defaultWechatAccountRequired": "Please add a WeChat account in settings and set it as default first.",
       "publishDraftFailed": "Failed to publish to draft: {{message}}",
