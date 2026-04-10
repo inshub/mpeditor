@@ -37,6 +37,7 @@ async function fallbackToRust(imgUrl: string): Promise<string> {
 
 interface WechatCompatOptions {
   convertImagesToBase64?: boolean;
+  normalizeListsToParagraphs?: boolean;
 }
 
 function extractCssValue(style: string, property: string) {
@@ -120,7 +121,12 @@ function convertListNodeToParagraphs(
   return paragraphs;
 }
 
-function buildWeChatCompatibleHtml(html: string, themeId: string) {
+function buildWeChatCompatibleHtml(
+  html: string,
+  themeId: string,
+  options: Pick<WechatCompatOptions, "normalizeListsToParagraphs"> = {}
+) {
+  const { normalizeListsToParagraphs = false } = options;
   const buildStart = typeof performance !== "undefined" ? performance.now() : Date.now();
   if (html.length > WECHAT_COMPAT_FAST_PATH_HTML_LEN) {
     console.warn(
@@ -204,17 +210,20 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
   });
   const stageFlexDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
-  // 3. Convert lists into bullet/number paragraphs for deterministic WeChat paste behavior.
-  const topLevelLists = Array.from(section.querySelectorAll("ul, ol")).filter(
-    (list) => !list.parentElement?.closest("ul, ol")
-  );
-  topLevelLists.forEach((list) => {
-    const paragraphs = convertListNodeToParagraphs(doc, list as HTMLElement, theme.styles);
-    if (!paragraphs.length) return;
-    const fragment = doc.createDocumentFragment();
-    paragraphs.forEach((paragraph) => fragment.appendChild(paragraph));
-    list.parentNode?.replaceChild(fragment, list);
-  });
+  // 3. Optional list normalization for edge paste scenarios.
+  // Default behavior keeps native UL/OL/LI so copy/publish output stays closer to preview.
+  if (normalizeListsToParagraphs) {
+    const topLevelLists = Array.from(section.querySelectorAll("ul, ol")).filter(
+      (list) => !list.parentElement?.closest("ul, ol")
+    );
+    topLevelLists.forEach((list) => {
+      const paragraphs = convertListNodeToParagraphs(doc, list as HTMLElement, theme.styles);
+      if (!paragraphs.length) return;
+      const fragment = doc.createDocumentFragment();
+      paragraphs.forEach((paragraph) => fragment.appendChild(paragraph));
+      list.parentNode?.replaceChild(fragment, list);
+    });
+  }
   const stageListDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   // 4. Force Inheritance
@@ -318,8 +327,12 @@ function buildWeChatCompatibleHtml(html: string, themeId: string) {
   return outputHtml;
 }
 
-export function makeWeChatCompatibleSync(html: string, themeId: string) {
-  return buildWeChatCompatibleHtml(html, themeId);
+export function makeWeChatCompatibleSync(
+  html: string,
+  themeId: string,
+  options: Pick<WechatCompatOptions, "normalizeListsToParagraphs"> = {}
+) {
+  return buildWeChatCompatibleHtml(html, themeId, options);
 }
 
 export async function makeWeChatCompatible(
@@ -327,8 +340,10 @@ export async function makeWeChatCompatible(
   themeId: string,
   options: WechatCompatOptions = {}
 ): Promise<string> {
-  const { convertImagesToBase64 = true } = options;
-  const outputHtml = buildWeChatCompatibleHtml(html, themeId);
+  const { convertImagesToBase64 = true, normalizeListsToParagraphs = false } = options;
+  const outputHtml = buildWeChatCompatibleHtml(html, themeId, {
+    normalizeListsToParagraphs,
+  });
 
   if (!convertImagesToBase64) {
     return outputHtml;

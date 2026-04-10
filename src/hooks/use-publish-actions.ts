@@ -329,6 +329,7 @@ export function usePublishActions({
       console.info(`[publish] stage=wechat_compat trace=${traceId}`);
       const compatibleHtml = await makeWeChatCompatible(renderedHtml, previewThemeId, {
         convertImagesToBase64: false,
+        normalizeListsToParagraphs: true,
       });
       const compatElapsed = Date.now() - compatStart;
       console.info(
