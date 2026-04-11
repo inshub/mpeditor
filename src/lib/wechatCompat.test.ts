@@ -6,8 +6,23 @@ function renderMarkdown(markdown: string) {
   return md.render(preprocessMarkdown(markdown));
 }
 
-describe.skip("makeWeChatCompatibleSync", () => {
-  it("converts code blocks to wrapped layout for WeChat drafts", () => {
+describe("makeWeChatCompatibleSync", () => {
+  it("replaces \\n with <br> inside code blocks for WeChat line break preservation", () => {
+    const rawHtml = renderMarkdown("```javascript\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```");
+    const themed = applyTheme(rawHtml, "apple");
+    const compatible = makeWeChatCompatibleSync(themed, "apple");
+    const doc = new DOMParser().parseFromString(compatible, "text/html");
+
+    const code = doc.querySelector("pre code");
+    expect(code).not.toBeNull();
+    // Should contain <br> tags to preserve line breaks in WeChat
+    expect(code?.innerHTML).toContain("<br>");
+    // Original line content should still be present
+    expect(code?.textContent).toContain("const a = 1;");
+    expect(code?.textContent).toContain("const b = 2;");
+  });
+
+  it("does not override pre/code styles for WeChat drafts", () => {
     const rawHtml = renderMarkdown(
       "```bash\ngor --input-raw :80 --output-http http://example.com/really/long/path\n```"
     );
@@ -17,34 +32,40 @@ describe.skip("makeWeChatCompatibleSync", () => {
     const pre = doc.querySelector("pre");
     const code = doc.querySelector("pre code");
 
-    expect(pre?.getAttribute("style")).toContain("white-space: pre-wrap !important;");
-    expect(pre?.getAttribute("style")).toContain("overflow-x: visible !important;");
-    expect(code?.getAttribute("style")).toContain("white-space: pre-wrap !important;");
-    expect(code?.getAttribute("style")).toContain("word-break: break-word !important;");
+    // WeChat handles code wrapping natively — do NOT add pre-wrap or word-break overrides
+    expect(pre?.getAttribute("style")).not.toContain("white-space: pre-wrap");
+    expect(code?.getAttribute("style")).not.toContain("word-break: break-word");
   });
 
-  it("converts markdown lists into bullet paragraphs for stable WeChat pasting", () => {
-    const rawHtml = renderMarkdown(
-      [
-        "- **跨平台粘贴**：直接从飞书、**Notion**、**Word**甚至任意网页复制富文本",
-        "",
-        "- **智能清洗**：自动剥离冗余样式和乱码",
-        "",
-        "- **零学习成本**：不需要会写 Markdown",
-      ].join("\n")
-    );
+  it("preserves traffic light dots in code blocks for WeChat drafts", () => {
+    const rawHtml = renderMarkdown("```javascript\nconst hello = 'world';\n```");
     const themed = applyTheme(rawHtml, "apple");
     const compatible = makeWeChatCompatibleSync(themed, "apple");
-    const doc = new DOMParser().parseFromString(compatible, "text/html");
-    const listParagraphs = Array.from(doc.querySelectorAll("p")).filter((p) =>
-      p.textContent?.includes("•")
-    );
 
-    expect(doc.querySelector("ul")).toBeNull();
-    expect(doc.querySelector("li")).toBeNull();
-    expect(listParagraphs).toHaveLength(3);
-    listParagraphs.forEach((paragraph) => {
-      expect(paragraph.textContent?.trim().startsWith("•")).toBe(true);
+    const doc = new DOMParser().parseFromString(compatible, "text/html");
+
+    // After WeChat compatibility, traffic lights should be OUTSIDE <pre>,
+    // using <section> tags instead of <div>/<span> for better WeChat support.
+    const pre = doc.querySelector("pre");
+    expect(pre).not.toBeNull();
+
+    // Traffic light wrapper should be a <section> before <pre>
+    const trafficLightWrapper = pre?.previousElementSibling;
+    expect(trafficLightWrapper).not.toBeNull();
+    expect(trafficLightWrapper?.tagName).toBe("SECTION");
+
+    // Check that individual dots exist as <section> elements
+    const dots = Array.from(trafficLightWrapper?.querySelectorAll(":scope > section") || []);
+    expect(dots.length).toBe(3);
+
+    // Check that dots have circular appearance with WeChat-whitelisted styles
+    dots.forEach((dot) => {
+      const dotStyle = dot.getAttribute("style") || "";
+      expect(dotStyle).toContain("display:inline-block");
+      expect(dotStyle).toContain("width:12px");
+      expect(dotStyle).toContain("height:12px");
+      expect(dotStyle).toContain("border-radius:50%");
+      expect(dotStyle).toContain("background:");
     });
   });
 });

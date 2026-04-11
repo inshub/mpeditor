@@ -64,14 +64,39 @@ export function useCopyActions({
 
       if (tauriRuntime) {
         console.info(`[copy] stage=wechat_compat_sync trace=${traceId}`);
-        const finalHtmlForCopy = makeWeChatCompatibleSync(renderedHtml, previewThemeId);
+        const finalHtmlForCopy = makeWeChatCompatibleSync(renderedHtml, previewThemeId, {
+          normalizeListsToParagraphs: false,
+        });
         console.info(
           `[copy] stage=wechat_compat_sync_done trace=${traceId} output_len=${finalHtmlForCopy.length}`
         );
 
-        console.info(`[copy] stage=exec_command_copy trace=${traceId}`);
-        copiedOk = copyViaExecCommand(finalHtmlForCopy, plainText);
-        console.info(`[copy] stage=exec_command_copy_done trace=${traceId} ok=${copiedOk}`);
+        // Prefer ClipboardItem (same as raphael-publish) — preserves inline styles exactly.
+        // execCommand("copy") re-serializes HTML through the browser and can lose/modify styles.
+        if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+          try {
+            console.info(`[copy] stage=clipboard_write_rich trace=${traceId}`);
+            const blob = new Blob([finalHtmlForCopy], { type: "text/html" });
+            const textBlob = new Blob([plainText], { type: "text/plain" });
+            const clipboardItem = new ClipboardItem({
+              "text/html": blob,
+              "text/plain": textBlob,
+            });
+            await navigator.clipboard.write([clipboardItem]);
+            copiedOk = true;
+            console.info(`[copy] stage=clipboard_write_rich_done trace=${traceId}`);
+          } catch {
+            copiedOk = false;
+            console.warn(`[copy] stage=clipboard_write_rich_failed trace=${traceId}`);
+          }
+        }
+
+        if (!copiedOk) {
+          console.info(`[copy] stage=exec_command_copy trace=${traceId}`);
+          copiedOk = copyViaExecCommand(finalHtmlForCopy, plainText);
+          console.info(`[copy] stage=exec_command_copy_done trace=${traceId} ok=${copiedOk}`);
+        }
+
         if (!copiedOk && navigator.clipboard?.writeText) {
           console.info(`[copy] stage=clipboard_write_text trace=${traceId}`);
           await navigator.clipboard.writeText(plainText);

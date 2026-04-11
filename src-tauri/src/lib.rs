@@ -579,19 +579,6 @@ fn wechat_proxy_upload_cooldown() -> &'static Mutex<Option<Instant>> {
     WECHAT_PROXY_UPLOAD_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(None))
 }
 
-fn is_wechat_proxy_upload_cooling_down() -> bool {
-    let Ok(mut guard) = wechat_proxy_upload_cooldown().lock() else {
-        return false;
-    };
-    if let Some(until) = *guard {
-        if until > Instant::now() {
-            return true;
-        }
-        *guard = None;
-    }
-    false
-}
-
 fn start_wechat_proxy_upload_cooldown(reason: &str) {
     if let Ok(mut guard) = wechat_proxy_upload_cooldown().lock() {
         let until = Instant::now() + Duration::from_secs(WECHAT_PROXY_UPLOAD_COOLDOWN_SECS);
@@ -600,15 +587,6 @@ fn start_wechat_proxy_upload_cooldown(reason: &str) {
             "[wechat-proxy-upload] cooldown_start seconds={} reason={}",
             WECHAT_PROXY_UPLOAD_COOLDOWN_SECS, reason
         );
-    }
-}
-
-fn clear_wechat_proxy_upload_cooldown() {
-    if let Ok(mut guard) = wechat_proxy_upload_cooldown().lock() {
-        if guard.is_some() {
-            eprintln!("[wechat-proxy-upload] cooldown_cleared");
-        }
-        *guard = None;
     }
 }
 
@@ -911,110 +889,6 @@ async fn send_proxy_request(
         text.chars().take(200).collect::<String>()
     );
     serde_json::from_str(&text).map_err(|err| format!("Invalid proxy response: {err}; body={text}"))
-}
-
-async fn send_proxy_upload_request(
-    proxy_url: &str,
-    target_url: &str,
-    file_name: &str,
-    mime_type: &str,
-    bytes: Vec<u8>,
-    field_name: &str,
-    network_proxy: Option<&NetworkProxyConfig>,
-) -> Result<serde_json::Value, String> {
-    eprintln!(
-        "[wechat-proxy-upload] request proxy={} url={} file={} mime={} bytes={}",
-        proxy_url,
-        target_url,
-        file_name,
-        mime_type,
-        bytes.len()
-    );
-    let max_attempts = 1;
-    for attempt in 1..=max_attempts {
-        let part = reqwest::multipart::Part::bytes(bytes.clone())
-            .file_name(file_name.to_string())
-            .mime_str(mime_type)
-            .map_err(|err| format!("Invalid mime type for proxy upload: {err}"))?;
-        let form = reqwest::multipart::Form::new()
-            .text("url", target_url.to_string())
-            .text("method", "UPLOAD".to_string())
-            .text("fileName", file_name.to_string())
-            .text("mimeType", mime_type.to_string())
-            .text("fieldName", field_name.to_string())
-            .part("file", part);
-        let client = build_wechat_proxy_client(proxy_url, network_proxy)?;
-        let response = client
-            .post(proxy_url)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|err| {
-                let detail = format_reqwest_error(&err);
-                eprintln!(
-                    "[wechat-proxy-upload] multipart_send_failed proxy={} url={} file={} mime={} bytes={} attempt={}/{} error={}",
-                    proxy_url,
-                    target_url,
-                    file_name,
-                    mime_type,
-                    bytes.len(),
-                    attempt,
-                    max_attempts,
-                    detail
-                );
-                detail
-            });
-        match response {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    let err = format!("Proxy HTTP error: {} {}", status, body);
-                    eprintln!(
-                        "[wechat-proxy-upload] multipart_http_error proxy={} url={} file={} mime={} attempt={}/{} error={}",
-                        proxy_url,
-                        target_url,
-                        file_name,
-                        mime_type,
-                        attempt,
-                        max_attempts,
-                        err
-                    );
-                    let can_retry = attempt < max_attempts && is_retryable_proxy_error(&err);
-                    if can_retry {
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
-                        continue;
-                    }
-                    return Err(err);
-                }
-                let text = resp
-                    .text()
-                    .await
-                    .map_err(|err| format!("Failed to read proxy response: {err}"))?;
-                let parsed = serde_json::from_str(&text)
-                    .map_err(|err| format!("Invalid proxy response: {err}; body={text}"))?;
-                eprintln!(
-                    "[wechat-proxy-upload] request_mode=multipart proxy={} file={} mime={} bytes={} attempt={}/{}",
-                    proxy_url,
-                    file_name,
-                    mime_type,
-                    bytes.len(),
-                    attempt,
-                    max_attempts
-                );
-                return Ok(parsed);
-            }
-            Err(err) => {
-                let can_retry = attempt < max_attempts && is_retryable_proxy_error(&err);
-                if can_retry {
-                    tokio::time::sleep(Duration::from_millis(1200)).await;
-                    continue;
-                }
-                return Err(err);
-            }
-        }
-    }
-    Err("Proxy upload failed with unknown error".to_string())
 }
 
 fn is_retryable_proxy_error(message: &str) -> bool {

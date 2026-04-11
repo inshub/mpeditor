@@ -18,7 +18,6 @@ export default defineConfig(async () => ({
     globals: true,
     environment: "jsdom",
     include: ["src/**/*.test.ts"],
-    exclude: ["src/lib/wechatCompat.test.ts"],
     pool: "forks",
     maxWorkers: 1,
   },

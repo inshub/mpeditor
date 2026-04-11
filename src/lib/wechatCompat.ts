@@ -283,27 +283,79 @@ function buildWeChatCompatibleHtml(
   });
   const stageInlineDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
-  // 5. WeChat draft editor does not preserve horizontal scrolling in code blocks.
-  // Convert them to wrapped blocks so long commands are not clipped after paste.
+  // 5. Do NOT override <pre> or <code> styles.
+  // raphael-publish confirms: WeChat handles code block wrapping natively.
+  // Adding white-space/word-break overrides causes formatting differences
+  // between preview and published draft.
+
+  // 5.5. WeChat filters <div> inside <pre> and has poor <div> support overall.
+  // Solution: move traffic lights outside <pre>, convert <div> to <section>,
+  // and use only WeChat-whitelisted CSS properties.
   section.querySelectorAll("pre").forEach((pre) => {
-    const currentStyle = pre.getAttribute("style") || "";
-    pre.setAttribute(
-      "style",
-      `${currentStyle}; white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: anywhere !important; overflow-x: visible !important; max-width: 100% !important;`
-    );
+    const trafficLightDiv = pre.querySelector(":scope > div:first-child");
+    if (!trafficLightDiv) return;
+
+    const style = trafficLightDiv.getAttribute("style") || "";
+    const isTrafficLight =
+      style.includes("white-space") && (style.includes("nowrap") || style.includes(" pre"));
+    if (!isTrafficLight) return;
+
+    // Create a <section> wrapper — WeChat supports <section> much better than <div>
+    const wrapper = doc.createElement("section");
+    wrapper.setAttribute("style", "margin-bottom:4px");
+
+    // Rebuild each dot with only WeChat-whitelisted properties
+    const dotElements = trafficLightDiv.querySelectorAll(":scope > span");
+    const backgrounds = ["#ff5f56", "#ffbd2e", "#27c93f"];
+    dotElements.forEach((_dot, i) => {
+      const sectionDot = doc.createElement("section");
+      sectionDot.setAttribute(
+        "style",
+        `display:inline-block;width:12px;height:12px;background:${backgrounds[i] || "#ff5f56"};margin-right:6px;vertical-align:middle;border-radius:50%`
+      );
+      wrapper.appendChild(sectionDot);
+    });
+
+    // Insert the <section> wrapper BEFORE the <pre> tag
+    pre.parentNode?.insertBefore(wrapper, pre);
+    // Remove the original traffic light <div> from inside <pre>
+    trafficLightDiv.remove();
+    // Reduce pre's top margin since traffic lights are now outside
+    const currentPreStyle = pre.getAttribute("style") || "";
+    pre.setAttribute("style", `${currentPreStyle}; margin-top: 0 !important;`);
   });
 
-  section.querySelectorAll("pre code, pre .hljs").forEach((codeNode) => {
-    const currentStyle = codeNode.getAttribute("style") || "";
-    codeNode.setAttribute(
-      "style",
-      `${currentStyle}; white-space: pre-wrap !important; word-break: break-word !important; overflow-wrap: anywhere !important; overflow-x: visible !important; max-width: 100% !important;`
-    );
-  });
   const stageCodeDone = typeof performance !== "undefined" ? performance.now() : Date.now();
 
   doc.body.innerHTML = "";
   doc.body.appendChild(section);
+
+  // 6. WeChat loses line breaks inside <pre> when pasting.
+  // Replace bare \n inside <code> with <br> so lines are preserved.
+  section.querySelectorAll("pre code").forEach((codeNode) => {
+    // Walk text nodes and split \n into <br> elements
+    const walker = doc.createTreeWalker(codeNode, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      textNodes.push(node as Text);
+    }
+    for (const textNode of textNodes) {
+      const text = textNode.textContent || "";
+      if (!text.includes("\n")) continue;
+      const parts = text.split("\n");
+      const parent = textNode.parentNode!;
+      const refNode = textNode.nextSibling;
+      parent.removeChild(textNode);
+      parts.forEach((part, i) => {
+        if (part) parent.insertBefore(doc.createTextNode(part), refNode);
+        if (i < parts.length - 1) {
+          const br = doc.createElement("br");
+          parent.insertBefore(br, refNode);
+        }
+      });
+    }
+  });
 
   // Prevent WeChat from breaking lines between inline emphasis and leading CJK punctuation.
   // Example: </strong>： should stay on the same line.

@@ -67,4 +67,24 @@ describe("applyTheme", () => {
       '"SF Mono", "Cascadia Code", "Fira Code", Consolas, Menlo, Monaco, monospace'
     );
   });
+
+  it("preserves traffic light dots with circular appearance in preview", () => {
+    const rawHtml = renderMarkdown("```javascript\nconst hello = 'world';\n```");
+    const themed = applyTheme(rawHtml, "apple");
+    const doc = new DOMParser().parseFromString(themed, "text/html");
+
+    // In preview mode (not WeChat compatible), traffic lights should be inside <pre>
+    const trafficLightDiv = doc.querySelector("pre > div:first-child");
+    expect(trafficLightDiv).not.toBeNull();
+
+    // Check that individual dots exist
+    const dots = Array.from(trafficLightDiv?.querySelectorAll("span") || []);
+    expect(dots.length).toBe(3);
+
+    // Check that dots have circular appearance (border-radius: 50%)
+    dots.forEach((dot) => {
+      const dotStyle = dot.getAttribute("style") || "";
+      expect(dotStyle).toContain("border-radius: 50%");
+    });
+  });
 });
