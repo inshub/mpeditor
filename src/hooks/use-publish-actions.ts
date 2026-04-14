@@ -242,7 +242,7 @@ export function usePublishActions({
       );
       toast.error(
         t("workspace.feedback.uploadFallbackLocal", {
-          message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),
+          message: err instanceof Error ? err.message : typeof err === "string" ? err : t("workspace.feedback.unknownError"),
         })
       );
       return fallback();
@@ -389,7 +389,7 @@ export function usePublishActions({
       );
       toast.error(
         t("workspace.feedback.publishDraftFailed", {
-          message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),
+          message: err instanceof Error ? err.message : typeof err === "string" ? err : t("workspace.feedback.unknownError"),
         })
       );
     } finally {

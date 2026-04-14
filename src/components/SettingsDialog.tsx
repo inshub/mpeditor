@@ -251,7 +251,7 @@ export default function SettingsDialog({
     } catch (err) {
       toast.error(
         t("workspace.feedback.networkProxyConnectFailed", {
-          message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),
+          message: err instanceof Error ? err.message : typeof err === "string" ? err : t("workspace.feedback.unknownError"),
         })
       );
     } finally {

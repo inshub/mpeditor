@@ -284,7 +284,7 @@ export function useSettingsDraftManager({
       } catch (err) {
         toast.error(
           t("workspace.feedback.autoLaunchToggleFailed", {
-            message: err instanceof Error ? err.message : t("workspace.feedback.unknownError"),
+            message: err instanceof Error ? err.message : typeof err === "string" ? err : t("workspace.feedback.unknownError"),
           })
         );
         throw err;

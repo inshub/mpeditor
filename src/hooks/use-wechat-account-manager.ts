@@ -149,7 +149,7 @@ export function useWechatAccountManager<T extends WechatSettingsDraft>({
       toast.error(
         translate("workspace.feedback.wechatConnectFailed", {
           accountName: account.name,
-          message: err instanceof Error ? err.message : translate("workspace.feedback.unknownError"),
+          message: err instanceof Error ? err.message : typeof err === "string" ? err : translate("workspace.feedback.unknownError"),
         })
       );
     } finally {
